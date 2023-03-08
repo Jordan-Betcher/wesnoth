@@ -111,7 +111,6 @@
 #include "variable_info.hpp"
 #include "video.hpp"                    // only for faked
 #include "whiteboard/manager.hpp"       // for whiteboard
-#include "wml_exception.hpp"
 #include "deprecation.hpp"
 
 #include <functional>               // for bind_t, bind
@@ -3079,9 +3078,26 @@ int game_lua_kernel::intf_set_achievement(lua_State *L)
 		if(group.content_for_ == content_for) {
 			for(achievement& achieve : group.achievements_) {
 				if(achieve.id_ == id) {
+					// already achieved
+					if(achieve.achieved_) {
+						return 0;
+					}
 					// found the achievement - mark it as completed
 					preferences::set_achievement(content_for, id);
 					achieve.achieved_ = true;
+					// progressable achievements can also check for current progress equals -1
+					if(achieve.max_progress_ != 0) {
+						achieve.current_progress_ = -1;
+					}
+					if(achieve.sound_path_ != "") {
+						sound::play_sound(achieve.sound_path_, sound::SOUND_FX);
+					}
+					// show the achievement popup
+					luaW_getglobal(L, "gui", "show_popup");
+					luaW_pushtstring(L, achieve.name_completed_);
+					luaW_pushtstring(L, achieve.description_completed_);
+					lua_pushstring(L, achieve.icon_completed_.c_str());
+					luaW_pcall(L, 3, 0, 0);
 					return 0;
 				}
 			}
@@ -3142,9 +3158,9 @@ int game_lua_kernel::intf_get_achievement(lua_State *L)
 					cfg["icon"] = achieve.icon_;
 					cfg["icon_completed"] = achieve.icon_completed_;
 					cfg["hidden"] = achieve.hidden_;
-					cfg["hidden_name"] = achieve.hidden_name_;
-					cfg["hidden_hint"] = achieve.hidden_hint_;
 					cfg["achieved"] = achieve.achieved_;
+					cfg["max_progress"] = achieve.max_progress_;
+					cfg["current_progress"] = achieve.current_progress_;
 					luaW_pushconfig(L, cfg);
 					return 1;
 				}
@@ -3159,6 +3175,64 @@ int game_lua_kernel::intf_get_achievement(lua_State *L)
 	ERR_LUA << "Achievement group " << content_for << " not found";
 	luaW_pushconfig(L, cfg);
 	return 1;
+}
+
+/**
+ * Progresses the provided achievement.
+ * - Arg 1: string - content_for.
+ * - Arg 2: string - id.
+ * - Arg 3: int - the amount to progress the achievement.
+ * - Arg 4: int - the limit the achievement can progress by
+ * - Ret 1: int - the achievement's current progress after adding amount, -2 if not found, -1 not a progressable achievement (including if it's already achieved)
+ * - Ret 2: int - the achievement's max progress, -2 if not found, or -1 not a progressable achievement
+ */
+int game_lua_kernel::intf_progress_achievement(lua_State *L)
+{
+	const char *content_for = luaL_checkstring(L, 1);
+	const char *id = luaL_checkstring(L, 2);
+	int amount = luaL_checkinteger(L, 3);
+	int limit = luaL_optinteger(L, 4, 999999999);
+
+	for(achievement_group& group : game_config_manager::get()->get_achievements()) {
+		if(group.content_for_ == content_for) {
+			for(achievement& achieve : group.achievements_) {
+				if(achieve.id_ == id) {
+					// check that this is a progressable achievement
+					if(achieve.max_progress_ == 0) {
+						ERR_LUA << "Attempted to progress achievement " << id << " for achievement group " << content_for << ", which does not have max_progress set.";
+						lua_pushinteger(L, -1);
+						lua_pushinteger(L, -1);
+						return 2;
+					}
+
+					if(!achieve.achieved_) {
+						int progress = preferences::progress_achievement(content_for, id, limit, achieve.max_progress_, amount);
+						if(progress >= achieve.max_progress_) {
+							intf_set_achievement(L);
+							achieve.current_progress_ = -1;
+						}
+						lua_pushinteger(L, progress);
+					} else {
+						lua_pushinteger(L, -1);
+					}
+					lua_pushinteger(L, achieve.max_progress_);
+
+					return 2;
+				}
+			}
+			// achievement not found - existing achievement group but non-existing achievement id
+			ERR_LUA << "Achievement " << id << " not found for achievement group " << content_for;
+			lua_pushinteger(L, -2);
+			lua_pushinteger(L, -2);
+			return 2;
+		}
+	}
+
+	// achievement group not found
+	ERR_LUA << "Achievement group " << content_for << " not found";
+	lua_pushinteger(L, -2);
+	lua_pushinteger(L, -2);
+	return 2;
 }
 
 /**
@@ -4988,6 +5062,7 @@ game_lua_kernel::game_lua_kernel(game_state & gs, play_controller & pc, reports 
 		{ "set", &dispatch<&game_lua_kernel::intf_set_achievement> },
 		{ "has", &dispatch<&game_lua_kernel::intf_has_achievement> },
 		{ "get", &dispatch<&game_lua_kernel::intf_get_achievement> },
+		{ "progress", &dispatch<&game_lua_kernel::intf_progress_achievement> },
 		{ nullptr, nullptr }
 	};
 	lua_getglobal(L, "wesnoth");

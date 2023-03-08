@@ -1013,10 +1013,14 @@ function wml_actions.remove_trait(cfg)
 end
 
 function wml_actions.set_achievement(cfg)
-	local achievement = wesnoth.achievements.get(cfg.content_for, cfg.id)
-	-- don't show the achievement popup for an achievement they already have
-	if not achievement.achieved then
-		wesnoth.achievements.set(cfg.content_for, cfg.id)
-		gui.show_popup(achievement.name_completed, achievement.description_completed, achievement.icon_completed)
+	wesnoth.achievements.set(cfg.content_for, cfg.id)
+end
+
+function wml_actions.progress_achievement(cfg)
+	if not tonumber(cfg.amount) then
+		wml.error("[progress_achievement] amount attribute not a number for content '"..cfg.content_for.."' and achievement '"..cfg.id.."'")
+		return
 	end
+
+	wesnoth.achievements.progress(cfg.content_for, cfg.id, cfg.amount, tonumber(cfg.limit) or 999999999)
 end
